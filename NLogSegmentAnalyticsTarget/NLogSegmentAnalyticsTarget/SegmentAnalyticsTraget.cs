@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using NLog;
 using NLog.Common;
 using NLog.Config;
@@ -13,7 +14,7 @@ namespace NLogSegmentAnalyticsTarget
     [Target("SegmentAnalyticsTraget")]
     public class SegmentAnalyticsTraget : TargetWithLayout
     {
-
+        private DateTime lastLogEventTime;
         [RequiredParameter]
         public string WriteKey { get; set; }
 
@@ -25,8 +26,25 @@ namespace NLogSegmentAnalyticsTarget
 
         protected override void FlushAsync(AsyncContinuation asyncContinuation)
         {
-            Analytics.Client.Flush();
-            base.FlushAsync(asyncContinuation);
+            try
+            {
+                Analytics.Client.Flush();
+                if (DateTime.UtcNow.AddSeconds(-30) > lastLogEventTime)
+                {
+                    // Nothing has been written, so nothing to wait for
+                    asyncContinuation(null);
+                }
+                else
+                {
+                    // Documentation says it is important to wait after flush, else nothing will happen
+                    // https://docs.microsoft.com/azure/application-insights/app-insights-api-custom-events-metrics#flushing-data
+                    Task.Delay(TimeSpan.FromMilliseconds(500)).ContinueWith((task) => asyncContinuation(null));
+                }
+            }
+            catch (Exception ex)
+            {
+                asyncContinuation(ex);
+            }
         }
 
         protected override void InitializeTarget()
@@ -37,6 +55,7 @@ namespace NLogSegmentAnalyticsTarget
 
         protected override void Write(LogEventInfo logEvent)
         {
+            lastLogEventTime = DateTime.UtcNow;
             var props = logEvent.Properties?.ToDictionary(k => k.Key is string ? (string)k.Key : k.Key.ToString(), k => k.Value);
             var userName = props.TryGetValue("user", out var userObj) 
                 ? userObj is string ? (string)userObj : userObj.ToString()
